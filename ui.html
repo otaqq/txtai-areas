@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>txtai-areas graph</title>
+<!-- Cytoscape.js (MIT): graph drawing -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
+<style>
+  :root { --bg: #fafafa; --fg: #222; --muted: #777; --panel: #fff; --line: #ddd; --accent: #2563eb; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16181d; --fg: #e6e6e6; --muted: #999; --panel: #1f2229; --line: #333; --accent: #60a5fa; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); height: 100vh; display: flex; flex-direction: column; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  select, input[type=search] { font: inherit; padding: 4px 6px; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
+  #stats { color: var(--muted); }
+  main { flex: 1; display: flex; min-height: 0; }
+  #cy { flex: 1; min-width: 0; }
+  aside { width: min(40%, 520px); border-left: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 12px 16px; display: none; }
+  aside.open { display: block; }
+  aside h2 { font-size: 15px; margin: 0 0 4px; }
+  aside .src { color: var(--muted); font-size: 12px; margin-bottom: 8px; word-break: break-all; }
+  aside pre { white-space: pre-wrap; word-break: break-word; font: 13px/1.6 system-ui, sans-serif; margin: 0; }
+  aside button { float: right; }
+  @media (max-width: 700px) { aside { position: fixed; inset: 40% 0 0 0; width: auto; border-left: 0; border-top: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>txtai-areas</h1>
+  <label>Area <select id="area"></select></label>
+  <label>Edge similarity ≥ <input id="min" type="range" min="0.4" max="0.95" step="0.01" value="0.75"> <span id="minv">0.75</span></label>
+  <input id="q" type="search" placeholder="Filter sections by name">
+  <span id="stats"></span>
+</header>
+<main>
+  <div id="cy"></div>
+  <aside id="side"><button id="close">×</button><h2 id="title"></h2><div class="src" id="src"></div><pre id="text"></pre></aside>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+let cy, data;
+
+// One colour per file, stable across reloads
+function color(file) {
+  let h = 0;
+  for (const c of file) h = (h * 31 + c.charCodeAt(0)) % 360;
+  return `hsl(${h}, 65%, ${dark ? 62 : 45}%)`;
+}
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${r.status} ${url}`);
+  return r.json();
+}
+
+function draw() {
+  const min = parseFloat($("min").value);
+  $("minv").textContent = min.toFixed(2);
+  const edges = data.edges.filter((e) => e.weight >= min);
+  const elements = [
+    ...data.nodes.map((n) => ({ data: { ...n, color: color(n.file), size: 14 + 6 * Math.sqrt(n.chunks) } })),
+    ...edges.map((e) => ({ data: { id: `${e.source}|${e.target}`, ...e } })),
+  ];
+  if (cy) cy.destroy();
+  cy = cytoscape({
+    container: $("cy"),
+    elements,
+    style: [
+      { selector: "node", style: { "background-color": "data(color)", width: "data(size)", height: "data(size)",
+        label: "data(label)", "font-size": 9, color: dark ? "#ddd" : "#333", "text-valign": "bottom", "text-margin-y": 3,
+        "text-max-width": 120, "text-wrap": "ellipsis" } },
+      { selector: "edge", style: { width: "mapData(weight, 0.4, 0.95, 0.3, 3)", "line-color": dark ? "#556" : "#bbb",
+        opacity: "mapData(weight, 0.4, 0.95, 0.25, 0.9)" } },
+      { selector: ".faded", style: { opacity: 0.1 } },
+      { selector: "node:selected", style: { "border-width": 3, "border-color": dark ? "#fff" : "#000" } },
+    ],
+    layout: { name: "cose", animate: false, nodeRepulsion: 9000, idealEdgeLength: 80, randomize: true },
+    wheelSensitivity: 0.3,
+  });
+  cy.on("tap", "node", (ev) => open(ev.target.data()));
+  cy.on("mouseover", "node", (ev) => {
+    const n = ev.target;
+    cy.elements().addClass("faded");
+    n.closedNeighborhood().removeClass("faded");
+  });
+  cy.on("mouseout", "node", () => cy.elements().removeClass("faded"));
+  filter();
+  $("stats").textContent = `${data.nodes.length} sections · ${edges.length} / ${data.edges.length} edges`;
+}
+
+function filter() {
+  const q = $("q").value.trim().toLowerCase();
+  if (!cy) return;
+  cy.nodes().forEach((n) => {
+    const hit = !q || n.data("label").toLowerCase().includes(q) || n.data("file").toLowerCase().includes(q);
+    n.style("display", hit ? "element" : "none");
+  });
+}
+
+async function open(node) {
+  $("side").classList.add("open");
+  $("title").textContent = node.label;
+  $("src").textContent = node.file;
+  $("text").textContent = "…";
+  const r = await getJSON(`/ui/section/${encodeURIComponent($("area").value)}?key=${encodeURIComponent(node.id)}`);
+  $("src").textContent = r.source || node.file;
+  $("text").textContent = r.text;
+}
+
+async function load() {
+  data = await getJSON(`/ui/graph/${encodeURIComponent($("area").value)}`);
+  try { localStorage.setItem("txtai-areas-area", $("area").value); } catch (e) {}
+  draw();
+}
+
+(async () => {
+  const areas = await getJSON("/ui/areas");
+  // Hierarchical names (academic.math): indent by depth so the tree shows in the list
+  for (const [a, n] of Object.entries(areas)) {
+    const depth = a.split(".").length - 1;
+    $("area").add(new Option(`${"\u3000".repeat(depth)}${depth ? a.split(".").pop() : a}（${n}）`, a));
+  }
+  try { const saved = localStorage.getItem("txtai-areas-area"); if (saved && areas[saved] !== undefined) $("area").value = saved; } catch (e) {}
+  $("area").onchange = load;
+  $("min").oninput = draw;
+  $("q").oninput = filter;
+  $("close").onclick = () => $("side").classList.remove("open");
+  if ($("area").value) load();
+})();
+</script>
+</body>
+</html>

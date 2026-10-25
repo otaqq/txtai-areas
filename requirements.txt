@@ -1,0 +1,6 @@
+# For a machine without a GPU, install the CPU-only torch first (about 1 GB smaller):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+txtai[graph]==9.14.0
+fastapi
+uvicorn
+litellm

@@ -82,14 +82,11 @@ def index(area: str, create: bool = False) -> Embeddings | None:
     return _indexes[area]
 
 
-def like(prefix: str) -> str:
-    """The prefix for a SQL LIKE. txtai's SQL does not take "escape", so % and _ stay wildcards here:
-    the caller must check the real prefix afterwards (ids_with_prefix)."""
-    return prefix.replace("'", "''")
-
-
+# Ids go into txtai's SQL as bound parameters only: txtai's SQL parser fails on a quote in a literal, even doubled
+# (a section named "User's ..." broke every search with graph > 0). txtai's SQL does not take "escape" either, so % and
+# _ stay LIKE wildcards: rows are checked against the real prefix afterwards.
 def ids_with_prefix(emb: Embeddings, prefix: str) -> list[str]:
-    rows = emb.search(f"select id from txtai where id like '{like(prefix)}%'", limit=100000)
+    rows = emb.search("select id from txtai where id like :p", limit=100000, parameters={"p": prefix + "%"})
     return [r["id"] for r in rows if r["id"].startswith(prefix)]
 
 
@@ -217,7 +214,7 @@ def search(req: Search):
                     if s > extra.get(cid, (0,))[0]:
                         extra[cid] = (s, via, area, emb)
             for cid, (s, via, area, emb) in sorted(extra.items(), key=lambda x: -x[1][0])[: req.graph]:
-                row = emb.search(f"select id, text, source from txtai where id = '{like(cid)}'", limit=1)
+                row = emb.search("select id, text, source from txtai where id = :id", limit=1, parameters={"id": cid})
                 if row:
                     hits.append({"area": area, **row[0], "score": s, "via": via})
     return hits
@@ -265,8 +262,8 @@ def ui_section(area: str, key: str):
         if emb is None:
             raise HTTPException(404, f"no area {area}")
         ids = set(ids_with_prefix(emb, key + "#"))
-        rows = [r for r in emb.search(f"select id, text, source from txtai where id like '{like(key + '#')}%'", limit=100000)
-                if r["id"] in ids]
+        rows = [r for r in emb.search("select id, text, source from txtai where id like :p", limit=100000,
+                                      parameters={"p": key + "#%"}) if r["id"] in ids]
     rows.sort(key=lambda r: int(r["id"].rsplit("#", 1)[1]))
     return {"key": key, "source": rows[0]["source"] if rows else "", "text": "\n\n".join(r["text"] for r in rows)}
 

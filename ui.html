@@ -118,10 +118,19 @@ async function load() {
 
 (async () => {
   const areas = await getJSON("/ui/areas");
-  // Hierarchical names (academic.math): indent by depth so the tree shows in the list
-  for (const [a, n] of Object.entries(areas)) {
+  // Hierarchical names (academic.math): show the tree, with every level above an area as a heading that cannot be
+  // chosen (language.fr.hm.book needs language, fr and hm above it, or its "book" could be any book)
+  const names = new Set();
+  for (const a of Object.keys(areas)) {
+    const parts = a.split(".");
+    parts.forEach((_, i) => names.add(parts.slice(0, i + 1).join(".")));
+  }
+  for (const a of [...names].sort()) {
     const depth = a.split(".").length - 1;
-    $("area").add(new Option(`${"\u3000".repeat(depth)}${depth ? a.split(".").pop() : a}（${n}）`, a));
+    const label = `${"\u3000".repeat(depth)}${a.split(".").pop()}`;
+    const opt = new Option(a in areas ? `${label}（${areas[a]}）` : label, a);
+    opt.disabled = !(a in areas);
+    $("area").add(opt);
   }
   try { const saved = localStorage.getItem("txtai-areas-area"); if (saved && areas[saved] !== undefined) $("area").value = saved; } catch (e) {}
   $("area").onchange = load;

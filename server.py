@@ -11,7 +11,8 @@ API (header X-API-Key: API_KEY):
   GET  /health
   GET  /areas                                       -> {area: number of chunks}
   POST /upsert {area, documents: [{id, text, source}]}
-  POST /delete {area, prefix | prefixes: [..]}     -> deletes every chunk whose id starts with (one of) the prefix(es)
+  POST /delete {area, prefix | prefixes: [..]}     -> deletes every chunk whose id starts with (one of) the prefix(es);
+                                                    an area left empty is removed (removed: true)
   POST /search {query, areas?: [..], exclude?: [..], limit?: 5, graph?: 0}  -> [{area, id, source, text, score, via?}]
                                                     (graph: also add up to that many chunks linked in the graph to the hits)
                                                     (exclude: areas left out, with everything under them)
@@ -25,6 +26,7 @@ Run: uvicorn server:app --host 0.0.0.0 --port 9630. Settings come from the envir
 import os
 import re
 import secrets
+import shutil
 import threading
 from pathlib import Path
 
@@ -165,6 +167,11 @@ def delete(req: Delete):
             ids += ids_with_prefix(emb, prefix)
         if ids:
             emb.delete(ids)
+            if not emb.count():  # nothing left (e.g. its documents moved to another area): drop the area itself
+                emb.close()
+                del _indexes[req.area]
+                shutil.rmtree(DATA / req.area, ignore_errors=True)
+                return {"area": req.area, "deleted": len(ids), "removed": True}
             emb.save(str(DATA / req.area))
         return {"area": req.area, "deleted": len(ids)}
 

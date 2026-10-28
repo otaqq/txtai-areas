@@ -25,7 +25,7 @@ Every call except `/health` needs the header `X-API-Key: <API_KEY>`.
 | `GET /health` | | `{ok, areas}` |
 | `GET /areas` | | `{area: number of chunks}` |
 | `POST /upsert` | `{area, documents: [{id, text, source}]}` | `{area, count}` |
-| `POST /delete` | `{area, prefix}` or `{area, prefixes: [...]}` | `{area, deleted}`: every chunk whose id starts with a prefix |
+| `POST /delete` | `{area, prefix}` or `{area, prefixes: [...]}` | `{area, deleted}`: every chunk whose id starts with a prefix. An area left with no chunks is removed (its folder too) and the answer has `removed: true` |
 | `POST /search` | `{query, areas?, exclude?, limit?: 5, graph?: 0, min_weight?: 0.75}` | `[{area, id, source, text, score, via?}]` |
 
 `graph: n` adds up to `n` chunks that the graph links to the hits (edges with at least `min_weight`);

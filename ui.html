@@ -15,7 +15,28 @@
   header h1 { font-size: 16px; margin: 0 8px 0 0; }
   select, input[type=search] { font: inherit; padding: 4px 6px; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
   #stats { color: var(--muted); }
-  main { flex: 1; display: flex; min-height: 0; }
+  main { flex: 1; display: flex; min-height: 0; position: relative; }
+  button { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+  button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+  /* Two ways to choose an area, switched in the header: a tree on the left, or one drop-down per level */
+  #modes { display: flex; gap: 4px; }
+  #crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  #crumbs .sep { color: var(--muted); }
+  body.mode-tree #crumbs, body.mode-crumbs #tree, body.mode-crumbs #treebtn { display: none; }
+  #tree { width: 260px; flex: none; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  #tree.closed { display: none; }
+  #tree input { margin: 8px; }
+  #tree-list { overflow: auto; flex: 1; padding: 0 4px 8px; }
+  #tree ul { list-style: none; margin: 0; padding-left: 14px; }
+  #tree-list > ul { padding-left: 0; }
+  #tree .row { display: flex; align-items: center; gap: 2px; padding: 1px 4px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+  #tree .row:hover { background: var(--bg); }
+  #tree .row.current { background: var(--accent); color: #fff; }
+  #tree .row:not(.area) .name { color: var(--muted); }
+  #tree .row.current .name { color: #fff; }
+  #tree .twisty { border: 0; background: none; color: inherit; width: 18px; padding: 0; flex: none; }
+  #tree .name { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  #tree .count { font-size: 11px; opacity: 0.7; }
   #cy { flex: 1; min-width: 0; }
   aside { width: min(40%, 520px); border-left: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 12px 16px; display: none; }
   aside.open { display: block; }
@@ -23,18 +44,22 @@
   aside .src { color: var(--muted); font-size: 12px; margin-bottom: 8px; word-break: break-all; }
   aside pre { white-space: pre-wrap; word-break: break-word; font: 13px/1.6 system-ui, sans-serif; margin: 0; }
   aside button { float: right; }
+  @media (max-width: 700px) { #tree { position: absolute; inset: 0 auto 0 0; width: min(85%, 320px); z-index: 2; } }
   @media (max-width: 700px) { aside { position: fixed; inset: 40% 0 0 0; width: auto; border-left: 0; border-top: 1px solid var(--line); } }
 </style>
 </head>
 <body>
 <header>
   <h1>txtai-areas</h1>
-  <label>Area <select id="area"></select></label>
+  <span id="modes"><button id="m-tree">Tree</button><button id="m-crumbs">Levels</button></span>
+  <button id="treebtn" title="Show or hide the tree">☰</button>
+  <span id="crumbs"></span>
   <label>Edge similarity ≥ <input id="min" type="range" min="0.4" max="0.95" step="0.01" value="0.75"> <span id="minv">0.75</span></label>
   <input id="q" type="search" placeholder="Filter sections by name">
   <span id="stats"></span>
 </header>
 <main>
+  <nav id="tree"><input id="tree-q" type="search" placeholder="Filter areas"><div id="tree-list"></div></nav>
   <div id="cy"></div>
   <aside id="side"><button id="close">×</button><h2 id="title"></h2><div class="src" id="src"></div><pre id="text"></pre></aside>
 </main>
@@ -42,6 +67,15 @@
 const $ = (id) => document.getElementById(id);
 const dark = matchMedia("(prefers-color-scheme: dark)").matches;
 let cy, data;
+let areas = {}, root, current = "", path = "";  // current: the area drawn; path: where the level drop-downs are
+
+function store(key, value) {
+  try {
+    if (value === undefined) return localStorage.getItem(key);
+    localStorage.setItem(key, value);
+  } catch (e) { return null; }
+}
+const expanded = new Set(JSON.parse(store("txtai-areas-open") || "[]"));
 
 // One colour per file, stable across reloads
 function color(file) {
@@ -105,39 +139,181 @@ async function open(node) {
   $("title").textContent = node.label;
   $("src").textContent = node.file;
   $("text").textContent = "…";
-  const r = await getJSON(`/ui/section/${encodeURIComponent($("area").value)}?key=${encodeURIComponent(node.id)}`);
+  const r = await getJSON(`/ui/section/${encodeURIComponent(current)}?key=${encodeURIComponent(node.id)}`);
   $("src").textContent = r.source || node.file;
   $("text").textContent = r.text;
 }
 
 async function load() {
-  data = await getJSON(`/ui/graph/${encodeURIComponent($("area").value)}`);
-  try { localStorage.setItem("txtai-areas-area", $("area").value); } catch (e) {}
+  data = await getJSON(`/ui/graph/${encodeURIComponent(current)}`);
+  store("txtai-areas-area", current);
   draw();
 }
 
+// ---- Area names as a tree: academic.cs.ml -> academic > cs > ml. Every level above an area is shown, as a level
+// that cannot be drawn (language.fr.hm.book needs language, fr and hm above it, or its "book" could be any book).
+function buildTree(names) {
+  const top = { name: "", full: "", children: new Map() };
+  for (const a of names) {
+    let n = top;
+    a.split(".").forEach((p, i, ps) => {
+      if (!n.children.has(p)) n.children.set(p, { name: p, full: ps.slice(0, i + 1).join("."), children: new Map() });
+      n = n.children.get(p);
+    });
+  }
+  return top;
+}
+const kids = (n) => [...n.children.values()].sort((a, b) => a.name.localeCompare(b.name));
+const total = (n) => (areas[n.full] || 0) + kids(n).reduce((s, c) => s + total(c), 0);
+function nodeOf(full) {
+  let n = root;
+  for (const p of full ? full.split(".") : []) n = n.children.get(p);
+  return n;
+}
+// A level that is not an area and has only one level below is joined with it ("hm.book"), so deep names stay short
+function compact(n) {
+  let label = n.name;
+  while (!(n.full in areas) && n.children.size === 1) {
+    n = kids(n)[0];
+    label += "." + n.name;
+  }
+  return [label, n];
+}
+
+function choose(area) {
+  current = path = area;
+  if (matchMedia("(max-width: 700px)").matches) setTree(false);
+  for (let i = area.indexOf("."); i > 0; i = area.indexOf(".", i + 1)) expanded.add(area.slice(0, i));
+  render();
+  load();
+}
+
+// ---- Tree on the left
+function toggle(full) {
+  expanded.has(full) ? expanded.delete(full) : expanded.add(full);
+  store("txtai-areas-open", JSON.stringify([...expanded]));
+  renderTree();
+}
+
+function row(label, n, depthOpen) {
+  const div = document.createElement("div");
+  div.className = "row" + (n.full in areas ? " area" : "") + (n.full === current ? " current" : "");
+  div.title = n.full;
+  const tw = document.createElement("button");
+  tw.className = "twisty";
+  tw.textContent = n.children.size ? (depthOpen ? "▾" : "▸") : "";
+  tw.disabled = !n.children.size;
+  tw.onclick = (ev) => { ev.stopPropagation(); toggle(n.full); };
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = label;
+  const count = document.createElement("span");
+  count.className = "count";
+  count.textContent = total(n);
+  div.append(tw, name, count);
+  div.onclick = () => (n.full in areas ? choose(n.full) : toggle(n.full));
+  return div;
+}
+
+function renderTree() {
+  const q = $("tree-q").value.trim().toLowerCase();
+  if (q) {  // filtering: the matching areas by their full names, no levels
+    const ul = document.createElement("ul");
+    for (const a of Object.keys(areas).sort().filter((a) => a.toLowerCase().includes(q))) {
+      const li = document.createElement("li");
+      li.append(row(a, nodeOf(a), false));
+      ul.append(li);
+    }
+    $("tree-list").replaceChildren(ul);
+    return;
+  }
+  const list = (n) => {
+    const ul = document.createElement("ul");
+    for (const c of kids(n)) {
+      const [label, end] = compact(c);
+      const open = expanded.has(end.full);
+      const li = document.createElement("li");
+      li.append(row(label, end, open));
+      if (end.children.size && open) li.append(list(end));
+      ul.append(li);
+    }
+    return ul;
+  };
+  $("tree-list").replaceChildren(list(root));
+}
+
+function setTree(open) {
+  $("tree").classList.toggle("closed", !open);
+  $("treebtn").setAttribute("aria-pressed", open);
+  store("txtai-areas-tree", open ? "open" : "closed");
+}
+
+// ---- One drop-down per level in the header: academic > cs > ml > hm.book
+function descend(full) {
+  let n = nodeOf(full);
+  while (n.full && !(n.full in areas) && n.children.size === 1) n = kids(n)[0];
+  if (n.full in areas) return choose(n.full);
+  path = n.full;
+  renderCrumbs();
+}
+
+function renderCrumbs() {
+  const box = $("crumbs");
+  box.replaceChildren();
+  let n = root;
+  while (n.children.size) {
+    const here = n;
+    const sel = document.createElement("select");
+    // "…" at a level that is not an area: choose below; "—" at an area that has areas below: stay here
+    sel.add(new Option(here.full in areas ? "—" : "…", ""));
+    let next = null;
+    for (const c of kids(here)) {
+      const [label, end] = compact(c);
+      sel.add(new Option(`${label} (${total(end)})`, end.full));
+      if (path === end.full || path.startsWith(end.full + ".")) next = end;
+    }
+    sel.value = next ? next.full : "";
+    sel.onchange = () => (sel.value ? descend(sel.value) : here.full ? choose(here.full) : null);
+    if (box.children.length) {
+      const sep = document.createElement("span");
+      sep.className = "sep";
+      sep.textContent = "›";
+      box.append(sep);
+    }
+    box.append(sel);
+    if (!next) break;
+    n = next;
+  }
+}
+
+function setMode(mode) {
+  document.body.className = `mode-${mode}`;
+  $("m-tree").setAttribute("aria-pressed", mode === "tree");
+  $("m-crumbs").setAttribute("aria-pressed", mode === "crumbs");
+  store("txtai-areas-mode", mode);
+}
+
+function render() {
+  renderTree();
+  renderCrumbs();
+}
+
 (async () => {
-  const areas = await getJSON("/ui/areas");
-  // Hierarchical names (academic.math): show the tree, with every level above an area as a heading that cannot be
-  // chosen (language.fr.hm.book needs language, fr and hm above it, or its "book" could be any book)
-  const names = new Set();
-  for (const a of Object.keys(areas)) {
-    const parts = a.split(".");
-    parts.forEach((_, i) => names.add(parts.slice(0, i + 1).join(".")));
-  }
-  for (const a of [...names].sort()) {
-    const depth = a.split(".").length - 1;
-    const label = `${"\u3000".repeat(depth)}${a.split(".").pop()}`;
-    const opt = new Option(a in areas ? `${label}（${areas[a]}）` : label, a);
-    opt.disabled = !(a in areas);
-    $("area").add(opt);
-  }
-  try { const saved = localStorage.getItem("txtai-areas-area"); if (saved && areas[saved] !== undefined) $("area").value = saved; } catch (e) {}
-  $("area").onchange = load;
+  areas = await getJSON("/ui/areas");
+  root = buildTree(Object.keys(areas));
+  setMode(store("txtai-areas-mode") === "crumbs" ? "crumbs" : "tree");
+  setTree(store("txtai-areas-tree") !== "closed" && !matchMedia("(max-width: 700px)").matches);
+  $("m-tree").onclick = () => setMode("tree");
+  $("m-crumbs").onclick = () => setMode("crumbs");
+  $("treebtn").onclick = () => setTree($("tree").classList.contains("closed"));
+  $("tree-q").oninput = renderTree;
   $("min").oninput = draw;
   $("q").oninput = filter;
   $("close").onclick = () => $("side").classList.remove("open");
-  if ($("area").value) load();
+  const saved = store("txtai-areas-area");
+  const first = saved && saved in areas ? saved : Object.keys(areas).sort()[0];
+  if (first) choose(first);
+  else render();
 })();
 </script>
 </body>

@@ -44,6 +44,9 @@ curl -s localhost:9630/search -H "X-API-Key: $API_KEY" -H 'Content-Type: applica
 
 `/ui` (HTTP Basic auth with `UI_USER` / `UI_PASSWORD`; off while `UI_PASSWORD` is empty) draws one area
 with [Cytoscape.js](https://js.cytoscape.org/) from cdnjs. Click a section to read its text.
+Choose the area in a tree on the left (**Tree**, can be hidden with ☰ and filtered by name) or with one drop-down
+per level in the header (**Levels**). A level that is not an area and has only one level below is shown joined with
+it (`hm.book`), so deep names stay short.
 Put the server behind HTTPS (a reverse proxy) if the UI is reachable from other machines.
 
 ## Run

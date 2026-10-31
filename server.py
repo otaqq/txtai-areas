@@ -18,7 +18,8 @@ API (header X-API-Key: API_KEY):
                                                     (exclude: areas left out, with everything under them)
 UI (HTTP Basic auth, UI_USER / UI_PASSWORD; off when UI_PASSWORD is empty):
   GET  /ui                                          -> graph view: search an area, draw around a section
-  GET  /ui/areas, /ui/search/{area}?q=, /ui/around/{area}?key=&depth=&min_weight=, /ui/section/{area}?key=
+  GET  /ui/areas, /ui/hubs/{area}, /ui/search/{area}?q=, /ui/around/{area}?key=&depth=&min_weight=,
+       /ui/section/{area}?key=
                                                     -> data for the page
   The graph shows the sections around one section; an edge is the closest pair of their chunks (txtai's graph).
   Chunk ids are "<source>:<path>#<section>#<n>" (n: the chunk's number in the section), e.g. "notes:a/b.md#Intro#0".
@@ -261,12 +262,9 @@ def ui_search(area: str, q: str, limit: int = 20):
     return [{**describe(sec), "score": round(score, 3)} for sec, score in list(best.items())[:limit]]
 
 
-@app.get("/ui/around/{area}", dependencies=[Depends(ui_auth)])
-def ui_around(area: str, key: str, depth: int = 1, min_weight: float = 0.75, limit: int = 60):
-    """The section `key` and the sections linked to it at least `min_weight` similar, up to `depth` steps away and
-    `limit` more sections (the strongest links first), with the edges between them. A whole big area (thousands of
-    sections) is too many to lay out in a browser and too dense to read."""
-    depth, limit = max(1, min(depth, 3)), max(1, min(limit, 300))
+def section_links(area: str, min_weight: float) -> tuple[dict, dict]:
+    """({section: number of chunks}, {section: {section: weight of the closest pair of their chunks}}) for the links
+    at least min_weight similar."""
     with _lock:
         emb = index(area)
         if emb is None or emb.graph is None:
@@ -276,15 +274,33 @@ def ui_around(area: str, key: str, depth: int = 1, min_weight: float = 0.75, lim
         for n, attrs in g.nodes(data=True):
             sec_of[n] = section_of(attrs.get("id", str(n)))
             chunks[sec_of[n]] = chunks.get(sec_of[n], 0) + 1
-        if key not in chunks:
-            raise HTTPException(404, f"no section {key}")
-        adj = {}  # section -> {section: weight of the closest pair of their chunks}
+        adj = {}
         for u, v, d in g.edges(data=True):
             a, b, w = sec_of.get(u), sec_of.get(v), d.get("weight", 0)
             if a and b and a != b and w >= min_weight:
                 for x, y in ((a, b), (b, a)):
                     if w > adj.setdefault(x, {}).get(y, 0):
                         adj[x][y] = w
+    return chunks, adj
+
+
+@app.get("/ui/hubs/{area}", dependencies=[Depends(ui_auth)])
+def ui_hubs(area: str, min_weight: float = 0.75, limit: int = 20):
+    """The sections with the most links at least min_weight similar: places to start without a search."""
+    _, adj = section_links(area, min_weight)
+    top = sorted(adj, key=lambda s: -len(adj[s]))[: max(1, min(limit, 100))]
+    return [{**describe(s), "links": len(adj[s])} for s in top]
+
+
+@app.get("/ui/around/{area}", dependencies=[Depends(ui_auth)])
+def ui_around(area: str, key: str, depth: int = 1, min_weight: float = 0.75, limit: int = 60):
+    """The section `key` and the sections linked to it at least `min_weight` similar, up to `depth` steps away and
+    `limit` more sections (the strongest links first), with the edges between them. A whole big area (thousands of
+    sections) is too many to lay out in a browser and too dense to read."""
+    depth, limit = max(1, min(depth, 3)), max(1, min(limit, 300))
+    chunks, adj = section_links(area, min_weight)
+    if key not in chunks:
+        raise HTTPException(404, f"no section {key}")
     steps, frontier = {key: 0}, [key]
     for step in range(1, depth + 1):
         found = {}

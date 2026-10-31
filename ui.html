@@ -157,17 +157,14 @@ async function around(key) {
   if ($("side").classList.contains("open")) open(data.nodes.find((n) => n.id === key));
 }
 
-async function search() {
-  const q = $("q").value.trim();
-  if (!q || !current) return;
-  $("hits-title").textContent = "Searching…";
+// The list on the left: search hits, or the most linked sections of the area before any search
+function showHits(title, items, note) {
+  $("hits-title").textContent = title;
   $("hits").hidden = false;
-  const hits = await getJSON(`/ui/search/${encodeURIComponent(current)}?${new URLSearchParams({ q })}`);
-  $("hits-title").textContent = `${hits.length} sections for “${q}”`;
-  $("hits-list").replaceChildren(...hits.map((h) => {
+  $("hits-list").replaceChildren(...items.map((h) => {
     const li = document.createElement("li");
     li.dataset.id = h.id;
-    li.title = `${h.file}\nscore ${h.score}`;
+    li.title = `${h.file}\n${note(h)}`;
     const label = document.createElement("span");
     label.className = "label";
     label.textContent = h.label;
@@ -181,7 +178,22 @@ async function search() {
     };
     return li;
   }));
+}
+
+async function search() {
+  const q = $("q").value.trim();
+  if (!q || !current) return;
+  showHits("Searching…", [], () => "");
+  const hits = await getJSON(`/ui/search/${encodeURIComponent(current)}?${new URLSearchParams({ q })}`);
+  showHits(`${hits.length} sections for “${q}”`, hits, (h) => `score ${h.score}`);
   if (hits.length) around(hits[0].id);
+}
+
+async function hubs() {
+  const area = current;
+  const top = await getJSON(`/ui/hubs/${encodeURIComponent(area)}?min_weight=${$("min").value}`);
+  if (area !== current || center) return;  // another area, or a search came first
+  showHits("Most linked sections", top, (h) => `${h.links} links`);
 }
 
 async function open(node) {
@@ -205,7 +217,8 @@ function load() {
   $("hits").hidden = true;
   $("side").classList.remove("open");
   $("stats").textContent = `${areas[current]} chunks`;
-  hint(`Search ${current}, then pick a section to see the sections around it.`);
+  hint(`Pick a section on the left, or search ${current}, to see the sections around it.`);
+  hubs();
 }
 
 // ---- Area names as a tree: academic.cs.ml -> academic > cs > ml. Every level above an area is shown, as a level

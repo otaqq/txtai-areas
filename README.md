@@ -45,7 +45,7 @@ curl -s localhost:9630/search -H "X-API-Key: $API_KEY" -H 'Content-Type: applica
 `/ui` (HTTP Basic auth with `UI_USER` / `UI_PASSWORD`; off while `UI_PASSWORD` is empty) draws with
 [Cytoscape.js](https://js.cytoscape.org/) from cdnjs. Search an area, pick a hit, and the page draws that section
 and the sections linked to it (**Steps**: 1 or 2 links away, at most 60; **Edge similarity**: the weakest link
-followed). Click a section to read its text; double-click it, or **Around this**, to draw around it instead.
+followed). Before a search, the list shows the most linked sections of the area. Click a section to read its text; double-click it, or **Around this**, to draw around it instead.
 A whole area is not drawn: a big one has thousands of sections, too many to lay out in a browser or to read.
 Choose the area in a tree on the left (**Tree**, can be hidden with ☰ and filtered by name) or with one drop-down
 per level in the header (**Levels**). A level that is not an area and has only one level below is shown joined with

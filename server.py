@@ -17,9 +17,10 @@ API (header X-API-Key: API_KEY):
                                                     (graph: also add up to that many chunks linked in the graph to the hits)
                                                     (exclude: areas left out, with everything under them)
 UI (HTTP Basic auth, UI_USER / UI_PASSWORD; off when UI_PASSWORD is empty):
-  GET  /ui                                          -> graph view of one area (Cytoscape.js)
-  GET  /ui/areas, /ui/graph/{area}, /ui/section/{area}?key=   -> data for the page
-  The graph shows sections; an edge is the closest pair of their chunks (txtai's graph).
+  GET  /ui                                          -> graph view: search an area, draw around a section
+  GET  /ui/areas, /ui/search/{area}?q=, /ui/around/{area}?key=&depth=&min_weight=, /ui/section/{area}?key=
+                                                    -> data for the page
+  The graph shows the sections around one section; an edge is the closest pair of their chunks (txtai's graph).
   Chunk ids are "<source>:<path>#<section>#<n>" (n: the chunk's number in the section), e.g. "notes:a/b.md#Intro#0".
 Run: uvicorn server:app --host 0.0.0.0 --port 9630. Settings come from the environment (see .env.example).
 """
@@ -31,6 +32,7 @@ import threading
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
@@ -49,6 +51,7 @@ CONFIG = {
 AREA = re.compile(r"^[a-z][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*$")  # dev, academic.math, creative.game
 
 app = FastAPI(title="txtai-areas")
+app.add_middleware(GZipMiddleware, minimum_size=1000)  # section texts and graphs are mostly text
 _indexes: dict[str, Embeddings] = {}
 _lock = threading.Lock()  # txtai indexes are not thread safe; writes are rare and searches take ~0.05 s
 
@@ -238,28 +241,65 @@ def ui_areas():
     return list_areas()
 
 
-@app.get("/ui/graph/{area}", dependencies=[Depends(ui_auth)])
-def ui_graph(area: str):
+def describe(sec: str) -> dict:
+    repo, rest = sec.split(":", 1) if ":" in sec else ("", sec)
+    file, _, name = rest.partition("#")
+    return {"id": sec, "label": name or file, "file": f"{repo}:{file}"}
+
+
+@app.get("/ui/search/{area}", dependencies=[Depends(ui_auth)])
+def ui_search(area: str, q: str, limit: int = 20):
+    """The sections of the area whose chunks are closest to the text q, best first."""
+    with _lock:
+        emb = index(area)
+        if emb is None:
+            raise HTTPException(404, f"no area {area}")
+        rows = emb.search("select id, score from txtai where similar(:q)", limit=limit * 3, parameters={"q": q})
+    best = {}
+    for r in rows:  # by score: the first chunk of a section is its best
+        best.setdefault(section_of(r["id"]), r["score"])
+    return [{**describe(sec), "score": round(score, 3)} for sec, score in list(best.items())[:limit]]
+
+
+@app.get("/ui/around/{area}", dependencies=[Depends(ui_auth)])
+def ui_around(area: str, key: str, depth: int = 1, min_weight: float = 0.75, limit: int = 60):
+    """The section `key` and the sections linked to it at least `min_weight` similar, up to `depth` steps away and
+    `limit` more sections (the strongest links first), with the edges between them. A whole big area (thousands of
+    sections) is too many to lay out in a browser and too dense to read."""
+    depth, limit = max(1, min(depth, 3)), max(1, min(limit, 300))
     with _lock:
         emb = index(area)
         if emb is None or emb.graph is None:
             raise HTTPException(404, f"no area {area}")
         g = emb.graph.backend
-        nodes, sec_of = {}, {}
+        chunks, sec_of = {}, {}
         for n, attrs in g.nodes(data=True):
-            sec = section_of(attrs.get("id", str(n)))
-            sec_of[n] = sec
-            repo, rest = sec.split(":", 1) if ":" in sec else ("", sec)
-            file, _, name = rest.partition("#")
-            node = nodes.setdefault(sec, {"id": sec, "label": name or file, "file": f"{repo}:{file}", "chunks": 0})
-            node["chunks"] += 1
-        edges = {}
+            sec_of[n] = section_of(attrs.get("id", str(n)))
+            chunks[sec_of[n]] = chunks.get(sec_of[n], 0) + 1
+        if key not in chunks:
+            raise HTTPException(404, f"no section {key}")
+        adj = {}  # section -> {section: weight of the closest pair of their chunks}
         for u, v, d in g.edges(data=True):
-            a, b = sorted((sec_of.get(u), sec_of.get(v)))
-            if a and b and a != b:
-                edges[(a, b)] = max(edges.get((a, b), 0), d.get("weight", 0))
-    return {"nodes": list(nodes.values()),
-            "edges": [{"source": a, "target": b, "weight": round(w, 3)} for (a, b), w in edges.items()]}
+            a, b, w = sec_of.get(u), sec_of.get(v), d.get("weight", 0)
+            if a and b and a != b and w >= min_weight:
+                for x, y in ((a, b), (b, a)):
+                    if w > adj.setdefault(x, {}).get(y, 0):
+                        adj[x][y] = w
+    steps, frontier = {key: 0}, [key]
+    for step in range(1, depth + 1):
+        found = {}
+        for s in frontier:
+            for t, w in adj.get(s, {}).items():
+                if t not in steps and w > found.get(t, 0):
+                    found[t] = w
+        frontier = sorted(found, key=lambda t: -found[t])[: limit + 1 - len(steps)]
+        steps.update({t: step for t in frontier})
+        if not frontier:
+            break
+    edges = [{"source": a, "target": b, "weight": round(w, 3)}
+             for a in steps for b, w in adj.get(a, {}).items() if b in steps and a < b]
+    return {"key": key, "nodes": [{**describe(s), "chunks": chunks[s], "step": n} for s, n in steps.items()],
+            "edges": edges}
 
 
 @app.get("/ui/section/{area}", dependencies=[Depends(ui_auth)])

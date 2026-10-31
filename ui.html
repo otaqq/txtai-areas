@@ -10,6 +10,7 @@
   :root { --bg: #fafafa; --fg: #222; --muted: #777; --panel: #fff; --line: #ddd; --accent: #2563eb; }
   @media (prefers-color-scheme: dark) { :root { --bg: #16181d; --fg: #e6e6e6; --muted: #999; --panel: #1f2229; --line: #333; --accent: #60a5fa; } }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); height: 100vh; display: flex; flex-direction: column; }
   header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--line); }
   header h1 { font-size: 16px; margin: 0 8px 0 0; }
@@ -38,12 +39,23 @@
   #tree .name { overflow: hidden; text-overflow: ellipsis; flex: 1; }
   #tree .count { font-size: 11px; opacity: 0.7; }
   #cy { flex: 1; min-width: 0; }
+  #graph { flex: 1; min-width: 0; display: flex; position: relative; }
+  #hint { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); pointer-events: none; padding: 16px; text-align: center; }
+  /* search hits: pick one to draw the sections around it */
+  #hits { width: 280px; flex: none; border-right: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 8px; }
+  #hits h3 { font-size: 13px; margin: 0 0 6px; color: var(--muted); font-weight: normal; }
+  #hits h3 button { float: right; }
+  #hits ol { margin: 0; padding-left: 22px; }
+  #hits li { padding: 3px 0; cursor: pointer; }
+  #hits li:hover .label, #hits li.current .label { color: var(--accent); }
+  #hits .file { display: block; color: var(--muted); font-size: 11px; word-break: break-all; }
   aside { width: min(40%, 520px); border-left: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 12px 16px; display: none; }
   aside.open { display: block; }
   aside h2 { font-size: 15px; margin: 0 0 4px; }
   aside .src { color: var(--muted); font-size: 12px; margin-bottom: 8px; word-break: break-all; }
   aside pre { white-space: pre-wrap; word-break: break-word; font: 13px/1.6 system-ui, sans-serif; margin: 0; }
   aside button { float: right; }
+  @media (max-width: 700px) { #hits { position: absolute; inset: 0 auto 0 0; width: min(85%, 320px); z-index: 1; } }
   @media (max-width: 700px) { #tree { position: absolute; inset: 0 auto 0 0; width: min(85%, 320px); z-index: 2; } }
   @media (max-width: 700px) { aside { position: fixed; inset: 40% 0 0 0; width: auto; border-left: 0; border-top: 1px solid var(--line); } }
 </style>
@@ -54,19 +66,21 @@
   <span id="modes"><button id="m-tree">Tree</button><button id="m-crumbs">Levels</button></span>
   <button id="treebtn" title="Show or hide the tree">☰</button>
   <span id="crumbs"></span>
+  <input id="q" type="search" placeholder="Search this area (Enter)">
+  <label>Steps <select id="depth"><option>1</option><option>2</option></select></label>
   <label>Edge similarity ≥ <input id="min" type="range" min="0.4" max="0.95" step="0.01" value="0.75"> <span id="minv">0.75</span></label>
-  <input id="q" type="search" placeholder="Filter sections by name">
   <span id="stats"></span>
 </header>
 <main>
   <nav id="tree"><input id="tree-q" type="search" placeholder="Filter areas"><div id="tree-list"></div></nav>
-  <div id="cy"></div>
-  <aside id="side"><button id="close">×</button><h2 id="title"></h2><div class="src" id="src"></div><pre id="text"></pre></aside>
+  <section id="hits" hidden><h3><button id="hits-close">×</button><span id="hits-title"></span></h3><ol id="hits-list"></ol></section>
+  <div id="graph"><div id="cy"></div><div id="hint"></div></div>
+  <aside id="side"><button id="close">×</button><button id="around" title="Draw the sections around this one (or double-click it)">Around this</button><h2 id="title"></h2><div class="src" id="src"></div><pre id="text"></pre></aside>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
 const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-let cy, data;
+let cy, data, center = "", shown = null;  // center: the section drawn around; shown: the section in the side panel
 let areas = {}, root, current = "", path = "";  // current: the area drawn; path: where the level drop-downs are
 
 function store(key, value) {
@@ -90,13 +104,12 @@ async function getJSON(url) {
   return r.json();
 }
 
+// The sections around one section: a whole area can have thousands, too many to lay out in a browser or to read
 function draw() {
-  const min = parseFloat($("min").value);
-  $("minv").textContent = min.toFixed(2);
-  const edges = data.edges.filter((e) => e.weight >= min);
   const elements = [
-    ...data.nodes.map((n) => ({ data: { ...n, color: color(n.file), size: 14 + 6 * Math.sqrt(n.chunks) } })),
-    ...edges.map((e) => ({ data: { id: `${e.source}|${e.target}`, ...e } })),
+    ...data.nodes.map((n) => ({ data: { ...n, color: color(n.file), size: 14 + 6 * Math.sqrt(n.chunks) },
+      classes: n.id === center ? "center" : "" })),
+    ...data.edges.map((e) => ({ data: { id: `${e.source}|${e.target}`, ...e } })),
   ];
   if (cy) cy.destroy();
   cy = cytoscape({
@@ -106,36 +119,75 @@ function draw() {
       { selector: "node", style: { "background-color": "data(color)", width: "data(size)", height: "data(size)",
         label: "data(label)", "font-size": 9, color: dark ? "#ddd" : "#333", "text-valign": "bottom", "text-margin-y": 3,
         "text-max-width": 120, "text-wrap": "ellipsis" } },
-      { selector: "edge", style: { width: "mapData(weight, 0.4, 0.95, 0.3, 3)", "line-color": dark ? "#556" : "#bbb",
+      { selector: "edge", style: { "curve-style": "haystack", width: "mapData(weight, 0.4, 0.95, 0.3, 3)", "line-color": dark ? "#556" : "#bbb",
         opacity: "mapData(weight, 0.4, 0.95, 0.25, 0.9)" } },
       { selector: ".faded", style: { opacity: 0.1 } },
+      { selector: "node.center", style: { "border-width": 4, "border-color": dark ? "#fff" : "#000", "font-weight": "bold" } },
       { selector: "node:selected", style: { "border-width": 3, "border-color": dark ? "#fff" : "#000" } },
     ],
     layout: { name: "cose", animate: false, nodeRepulsion: 9000, idealEdgeLength: 80, randomize: true },
     wheelSensitivity: 0.3,
   });
   cy.on("tap", "node", (ev) => open(ev.target.data()));
+  cy.on("dbltap", "node", (ev) => around(ev.target.id()));
   cy.on("mouseover", "node", (ev) => {
     const n = ev.target;
     cy.elements().addClass("faded");
     n.closedNeighborhood().removeClass("faded");
   });
   cy.on("mouseout", "node", () => cy.elements().removeClass("faded"));
-  filter();
-  $("stats").textContent = `${data.nodes.length} sections · ${edges.length} / ${data.edges.length} edges`;
+  const c = data.nodes.find((n) => n.id === center);
+  $("stats").textContent = `${data.nodes.length} sections · ${data.edges.length} edges around “${c ? c.label : center}”`;
 }
 
-function filter() {
-  const q = $("q").value.trim().toLowerCase();
-  if (!cy) return;
-  cy.nodes().forEach((n) => {
-    const hit = !q || n.data("label").toLowerCase().includes(q) || n.data("file").toLowerCase().includes(q);
-    n.style("display", hit ? "element" : "none");
-  });
+function hint(text) {
+  $("hint").textContent = text;
+  $("hint").hidden = !text;
+}
+
+async function around(key) {
+  center = key;
+  $("minv").textContent = parseFloat($("min").value).toFixed(2);
+  hint("…");
+  const q = new URLSearchParams({ key, depth: $("depth").value, min_weight: $("min").value });
+  data = await getJSON(`/ui/around/${encodeURIComponent(current)}?${q}`);
+  hint(data.nodes.length > 1 ? "" : "No section is that similar to this one. Lower the edge similarity.");
+  draw();
+  for (const li of $("hits-list").children) li.classList.toggle("current", li.dataset.id === key);
+  if ($("side").classList.contains("open")) open(data.nodes.find((n) => n.id === key));
+}
+
+async function search() {
+  const q = $("q").value.trim();
+  if (!q || !current) return;
+  $("hits-title").textContent = "Searching…";
+  $("hits").hidden = false;
+  const hits = await getJSON(`/ui/search/${encodeURIComponent(current)}?${new URLSearchParams({ q })}`);
+  $("hits-title").textContent = `${hits.length} sections for “${q}”`;
+  $("hits-list").replaceChildren(...hits.map((h) => {
+    const li = document.createElement("li");
+    li.dataset.id = h.id;
+    li.title = `${h.file}\nscore ${h.score}`;
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = h.label;
+    const file = document.createElement("span");
+    file.className = "file";
+    file.textContent = h.file.split("/").pop();
+    li.append(label, file);
+    li.onclick = () => {
+      if (matchMedia("(max-width: 700px)").matches) $("hits").hidden = true;
+      around(h.id);
+    };
+    return li;
+  }));
+  if (hits.length) around(hits[0].id);
 }
 
 async function open(node) {
+  shown = node.id;
   $("side").classList.add("open");
+  $("around").hidden = node.id === center;
   $("title").textContent = node.label;
   $("src").textContent = node.file;
   $("text").textContent = "…";
@@ -144,10 +196,16 @@ async function open(node) {
   $("text").textContent = r.text;
 }
 
-async function load() {
-  data = await getJSON(`/ui/graph/${encodeURIComponent(current)}`);
+// A new area: nothing drawn until a search
+function load() {
   store("txtai-areas-area", current);
-  draw();
+  if (cy) cy.destroy();
+  cy = null;
+  center = "";
+  $("hits").hidden = true;
+  $("side").classList.remove("open");
+  $("stats").textContent = `${areas[current]} chunks`;
+  hint(`Search ${current}, then pick a section to see the sections around it.`);
 }
 
 // ---- Area names as a tree: academic.cs.ml -> academic > cs > ml. Every level above an area is shown, as a level
@@ -307,9 +365,12 @@ function render() {
   $("m-crumbs").onclick = () => setMode("crumbs");
   $("treebtn").onclick = () => setTree($("tree").classList.contains("closed"));
   $("tree-q").oninput = renderTree;
-  $("min").oninput = draw;
-  $("q").oninput = filter;
+  $("q").onkeydown = (ev) => { if (ev.key === "Enter") search(); };
+  $("min").oninput = () => ($("minv").textContent = parseFloat($("min").value).toFixed(2));
+  $("min").onchange = $("depth").onchange = () => center && around(center);
+  $("hits-close").onclick = () => ($("hits").hidden = true);
   $("close").onclick = () => $("side").classList.remove("open");
+  $("around").onclick = () => shown && around(shown);
   const saved = store("txtai-areas-area");
   const first = saved && saved in areas ? saved : Object.keys(areas).sort()[0];
   if (first) choose(first);

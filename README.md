@@ -11,7 +11,7 @@ a semantic graph for graph RAG, and a graph view in the browser.
   A search can add the chunks linked to its hits (`graph`).
 - Embeddings go through [LiteLLM](https://github.com/BerriAI/litellm), so any embedding API works:
   OpenAI, or a self-hosted OpenAI-compatible server (Ollama, a LiteLLM proxy, ...).
-- The **graph view** (`/ui`) shows the sections of an area and how they connect, like Obsidian's graph.
+- The **graph view** (`/ui`) searches an area and draws the sections around a hit and how they connect.
 
 The server only stores and searches. Splitting files into chunks and keeping them in step with their source
 is up to the client that calls `/upsert` and `/delete`.
@@ -42,8 +42,11 @@ curl -s localhost:9630/search -H "X-API-Key: $API_KEY" -H 'Content-Type: applica
 
 ## Graph view
 
-`/ui` (HTTP Basic auth with `UI_USER` / `UI_PASSWORD`; off while `UI_PASSWORD` is empty) draws one area
-with [Cytoscape.js](https://js.cytoscape.org/) from cdnjs. Click a section to read its text.
+`/ui` (HTTP Basic auth with `UI_USER` / `UI_PASSWORD`; off while `UI_PASSWORD` is empty) draws with
+[Cytoscape.js](https://js.cytoscape.org/) from cdnjs. Search an area, pick a hit, and the page draws that section
+and the sections linked to it (**Steps**: 1 or 2 links away, at most 60; **Edge similarity**: the weakest link
+followed). Click a section to read its text; double-click it, or **Around this**, to draw around it instead.
+A whole area is not drawn: a big one has thousands of sections, too many to lay out in a browser or to read.
 Choose the area in a tree on the left (**Tree**, can be hidden with ☰ and filtered by name) or with one drop-down
 per level in the header (**Levels**). A level that is not an area and has only one level below is shown joined with
 it (`hm.book`), so deep names stay short.

@@ -56,12 +56,14 @@ Put the server behind HTTPS (a reverse proxy) if the UI is reachable from other 
 
 ```sh
 python3 -m venv venv
-venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu   # no GPU needed
 venv/bin/pip install -r requirements.txt
 cp .env.example .env    # set API_KEY, EMBEDDINGS_*, UI_PASSWORD
 set -a; . ./.env; set +a
 venv/bin/uvicorn server:app --host 0.0.0.0 --port 9630
 ```
+
+No torch: `requirements.txt` uses `txtai_minimal` (txtai without torch and transformers), as the embeddings come
+from an API. In a venv that has the plain `txtai` package (before v0.1.7), make a new venv: both install `txtai`.
 
 `txtai-areas.service` is an example systemd unit.
 

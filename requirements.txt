@@ -1,6 +1,9 @@
-# For a machine without a GPU, install the CPU-only torch first (about 1 GB smaller):
-#   pip install torch --index-url https://download.pytorch.org/whl/cpu
-txtai[graph]==9.14.0
+# txtai_minimal: txtai without torch and transformers (embeddings come from an API through litellm).
+# The plain txtai package pulls in torch: about 1 GB more on disk and 400 MB more memory, unused here.
+# Both install the module "txtai": do not install them side by side.
+txtai_minimal[graph]==9.14.0
+faiss-cpu
+msgpack
 fastapi
 uvicorn
 litellm
